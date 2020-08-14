@@ -585,6 +585,8 @@ x += self.pos_encoding[:, :input_seq_len, :]  # 加入位置 encoding
 
 ## 五丶Encoder 與 Decoder
 
+<br>
+
 終於來到最核心的部分了，這是整個機器翻譯的最大重點，Encoder 與 Decoder。
 
 檢視一下我們的任務需求，其實就是輸入一段序列(英文)，得到另一串序列(中文)。為了應對這種 __序列生成問題__，我們可以使用 RNN 架構解決問題，也叫做  __Sequence to Sequence Model__。
@@ -607,7 +609,7 @@ x += self.pos_encoding[:, :input_seq_len, :]  # 加入位置 encoding
 
 我們拿到的 hidden_state_2 代表 Encoder 已經看完整個句子的結果。把它送入 Decoder 後就可以解析出目標句子。
 
-這樣做有一些缺點，比如我們有一個很長的句子，不可能在有限空間內用一個 hidden_state 表達完整句意。並且這樣不能進行平行化運算。所以大神們就有了新的 idea，就是 __注意力機制（Attention Mechanism）__，提供更多資訊給 Decoder，並透過類似資料庫存取的概念，令其自行學會該怎麼提取資訊。
+這樣做有一些缺點，比如我們有一個很長的句子，不可能在有限空間內用一個 hidden_state 表達完整句意。並且這樣不能進行平行化運算。所以大神們就有了新的 idea，就是 __注意力機制（Attention Mechanism）__，提供更多資訊給 Decoder，並透過類似資料庫存取的概念，令其自行學會該怎麼提取資訊。(關於平行化運算會在第六單元講解)
 
 <br>
 
@@ -648,4 +650,63 @@ Decoder 在做翻譯的動作時，會對目前所進行翻譯位址進行考量
 
 ![p5_8](imgs/p5_8.jpg)
 
-所以這邊我在強調一下，我們產生第一個字 Je 時，__Decoder__ 是看了前一個字 __"\<S\>"__ 與 __Encoder__ 權重才下的判斷。 
+所以這邊再次強調一下，我們產生第一個字 Je 時，__Decoder__ 是看了前一個字 __"\<S\>"__ 與 __Encoder__ 輸出串列乘上權重才下的判斷。 
+
+![p5_9](imgs/p5_9.jpg)
+
+<br>
+
+那產生完第一個字 Je 之後呢，接下來要做的步驟跟先前一模一樣，再生長第二個字時，我們除了要看 Enocder 的 output 之外，還要去看前面已經生成好的句字，如下 : 
+
+![p5_10](imgs/p5_10.jpg)
+
+得到輸入為 ["\<S\>", "Je"]，同時看到 Encoder 的結果，我們的 Decoder 就可以生成下一個字 "suis": 
+
+![p5_11](imgs/p5_11.jpg)
+
+這樣依次類推，最終結果就會是 : 
+
+![p5_12](imgs/p5_12.jpg)
+
+<br>
+
+再強調說明幾個重點，在訓練還沒開始前，這些權重都是隨機且無意義的。是透過訓練，神經網路才知道該為這些權重賦予什麼值。
+
+這邊觀念很重要喔，一定要弄懂。
+
+<br>
+<br>
+
+---
+
+<br>
+<br>
+
+六丶自注意力機制
+
+前面提到了 seq2seq 的一個弱點是無法平行化運算，假如我們要轉化一個句子，那生成整個序列時就必須要看完整個句子才能算出結果，白話意思就是後一個序列依賴前一個的結果，後面不斷依賴前面，所以就會發生等待問題。
+
+self-attentaion 就是解決這樣的問題而誕生的方法。
+
+先提供最完整的教學資源 [Transformer by Hung-yi Lee](https://www.youtube.com/watch?v=ugWDIIOHtPA)
+
+self-attention 的計算公式我這邊就不再重複講了，影片中提到的公式待會會實作一次，在這之前，讓我手畫一張圖來說明一下加入 self-attention 之後的架構 : 
+
+![p6_1](imgs/p6_1.jpg)
+
+這張圖在老師影片中有出現過，如果還是無法理解這些都是甚麼的話，沒關係，繼續看下去。
+
+我們看整體架構，我會在這張圖上劃分 3 個部分 : 
+
+
+![p6_2](imgs/p6_2.jpg)
+
+我們前面第 5 單元提到 seq2seq + Attention 機制的架構，其實道理都是一樣，紅色 Encoder 部分先算出來源語言的 vector，然後黃色部份吃進來目標語言的 "前一個字"(假如是 \<S\>)，然後一併把紅丶黃的運算結果合併送給紫色部份做運算，其實可以看到紅色跟紫色的結構是一樣的。
+
+所以現在理解起來下面這個短片應該已經不是甚麼難事了吧 : 
+
+<video autoplay="" loop="" muted="" playsinline="" poster="https://leemeng.tw/images/transformer/transformer-nmt-encode-decode.jpg" style="mix-blend-mode: initial;">
+<source src="https://leemeng.tw/images/transformer/transformer-nmt-encode-decode.mp4" type="video/mp4">
+</video>
+
+來源網址 : https://leemeng.tw/images/transformer/transformer-nmt-encode-decode.jpg
