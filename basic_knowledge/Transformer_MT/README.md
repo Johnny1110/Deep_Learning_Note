@@ -953,7 +953,7 @@ attention_weights: tf.Tensor(
 
 這邊再整理強調一下以上這些實現公式的步驟 ：
 
-1. q, k 做 [點積運算](.\dot_product.md)（不是矩陣乘法），得到的張量結果 `shape = (..., seq_len_q, seq_len_k)`
+1. q, k 做 [點積運算](dot_product.md)（不是矩陣乘法），得到的張量結果 `shape = (..., seq_len_q, seq_len_k)`
 
 2. 將以上結果除以開根號的 dk，dk 代表 k 序列長度。
 
@@ -971,7 +971,7 @@ attention_weights: tf.Tensor(
 
 這邊涉及到 dot product 概念，需要高中矩陣乘法知識，如果忘記了，請點這邊複習一下 : 
 
-* [dot product 基礎](.\dot_product.md)
+* [dot product 基礎](dot_product.md)
 
 <br>
 
