@@ -796,7 +796,7 @@ def create_look_ahead_mask(size):
 
 <br>
 
-關於 `tf.linalg.band_part()` 使用方法，請參考這一篇筆記[（點這裡！）](../../basic_tool_use/tf.linalg.band_part()，上下三角形.ipynb)
+關於 `tf.linalg.band_part()` 使用方法，請參考這一篇筆記[（點這裡！）](https://nbviewer.jupyter.org/github/Johnny1110/Deep_Learning_Note/blob/master/basic_tool_use/tf.linalg.band_part%28%29%EF%BC%8C%E4%B8%8A%E4%B8%8B%E4%B8%89%E8%A7%92%E5%BD%A2.ipynb)
 
 
 
