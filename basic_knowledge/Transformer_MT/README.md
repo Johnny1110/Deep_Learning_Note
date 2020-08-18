@@ -733,6 +733,8 @@ Decoder 在推算目標序列時，需要有遮罩的幫忙。甚麼是遮罩呢
 
 ### padding mask : 
 
+目的是讓 Model 不要去關注到 padding。
+
 ```py
 def create_padding_mask(seq):
   # padding mask 的工作就是把索引序列中為 0 的位置設為 1
@@ -787,6 +789,8 @@ array([[[[0., 0., 0., 0., 0., 0., 1., 1.]]],
 
 ### look ahead mask：
 
+目的是要確保 Decoder 在進行自注意力機制時輸出序列的每個子詞只會關注到自己之前（左邊）的字詞，不會不小心關注到未來（右邊）還沒被 Decoder 生成的子詞。
+
 ```py
 # 建立一個 2 維矩陣，維度為 (size, size)，
 def create_look_ahead_mask(size):
@@ -794,12 +798,77 @@ def create_look_ahead_mask(size):
   return mask  # (seq_len, seq_len)
 ```
 
+
 <br>
 
 關於 `tf.linalg.band_part()` 使用方法，請參考這一篇筆記[（點這裡！）](https://nbviewer.jupyter.org/github/Johnny1110/Deep_Learning_Note/blob/master/basic_tool_use/tf.linalg.band_part%28%29%EF%BC%8C%E4%B8%8A%E4%B8%8B%E4%B8%89%E8%A7%92%E5%BD%A2.ipynb)
 
+<br>
 
+我們先建立一個 mask 來看看 : 
 
+```py
+seq_len = emb_tar.shape[1] # 注意這次我們用中文的詞嵌入張量 `emb_tar`
+look_ahead_mask = create_look_ahead_mask(seq_len)
+print("emb_tar:", emb_tar)
+print("-" * 20)
+print("look_ahead_mask", look_ahead_mask)
+```
+
+輸出 :
+
+```py
+emb_tar: tf.Tensor(
+[[[-0.0441955  -0.01026772  0.03740635  0.02017349]
+  [ 0.02129837 -0.00746276  0.03881821 -0.01586295]
+  [-0.01179456  0.02825376  0.00738146  0.02963744]
+  [ 0.01171205  0.04350302 -0.01190796  0.02526634]
+  [ 0.03814722 -0.03364048 -0.03744673  0.04369817]
+  [ 0.0280853   0.01269842  0.04268574 -0.04069148]
+  [ 0.04029209 -0.00619308 -0.04934603  0.02242902]
+  [-0.00285894  0.02392108 -0.03126474  0.01345349]
+  [-0.00285894  0.02392108 -0.03126474  0.01345349]
+  [-0.00285894  0.02392108 -0.03126474  0.01345349]]
+
+ [[-0.0441955  -0.01026772  0.03740635  0.02017349]
+  [-0.00359621 -0.01380367 -0.02875998 -0.03855735]
+  [ 0.04516688 -0.04480755 -0.03278694 -0.0093614 ]
+  [ 0.04131394 -0.04065727 -0.04330624 -0.03341667]
+  [ 0.03572228 -0.04500845  0.0470326   0.03095007]
+  [-0.03566641 -0.03730996 -0.00597564 -0.03933349]
+  [ 0.01850356  0.03993076  0.02729526 -0.04848848]
+  [-0.02294568 -0.02494572 -0.0136737  -0.04278342]
+  [ 0.0280853   0.01269842  0.04268574 -0.04069148]
+  [ 0.04029209 -0.00619308 -0.04934603  0.02242902]]], shape=(2, 10, 4), dtype=float32)
+--------------------------------------------------------------
+look_ahead_mask tf.Tensor(
+[[0. 1. 1. 1. 1. 1. 1. 1. 1. 1.]
+ [0. 0. 1. 1. 1. 1. 1. 1. 1. 1.]
+ [0. 0. 0. 1. 1. 1. 1. 1. 1. 1.]
+ [0. 0. 0. 0. 1. 1. 1. 1. 1. 1.]
+ [0. 0. 0. 0. 0. 1. 1. 1. 1. 1.]
+ [0. 0. 0. 0. 0. 0. 1. 1. 1. 1.]
+ [0. 0. 0. 0. 0. 0. 0. 1. 1. 1.]
+ [0. 0. 0. 0. 0. 0. 0. 0. 1. 1.]
+ [0. 0. 0. 0. 0. 0. 0. 0. 0. 1.]
+ [0. 0. 0. 0. 0. 0. 0. 0. 0. 0.]], shape=(10, 10), dtype=float32)
+```
+
+這邊我們著重看 `look_ahead_mask` 就好。前面說到了 `padding_mask` 會把出現 1 的部分全部乘上一個很大的負數，加入到 `attention_weight` 中，目的是把 Weight 中不該注意的地方變 "0"。 `look_ahead_mask` 也是一樣，聰明的你應該一看就知道 `look_ahead_mask` 長成這樣代表甚麼意思，但我還是再多寫幾行來說明好了。
+
+```py
+look_ahead_mask tf.Tensor(
+[[0. 1. 1. 1. 1. 1. 1. 1. 1. 1.]  # Decoder 翻第一個字時，權重只注意自己就好了
+ [0. 0. 1. 1. 1. 1. 1. 1. 1. 1.]  # Decoder 翻第二個字時，權重要注意自己與前一個字
+ [0. 0. 0. 1. 1. 1. 1. 1. 1. 1.]  # ... 依次類推 ...
+ [0. 0. 0. 0. 1. 1. 1. 1. 1. 1.]
+ [0. 0. 0. 0. 0. 1. 1. 1. 1. 1.]
+ [0. 0. 0. 0. 0. 0. 1. 1. 1. 1.]
+ [0. 0. 0. 0. 0. 0. 0. 1. 1. 1.]
+ [0. 0. 0. 0. 0. 0. 0. 0. 1. 1.]
+ [0. 0. 0. 0. 0. 0. 0. 0. 0. 1.]
+ [0. 0. 0. 0. 0. 0. 0. 0. 0. 0.]], shape=(10, 10), dtype=float32)
+```
 
 <br>
 <br>
@@ -807,6 +876,8 @@ def create_look_ahead_mask(size):
 <br>
 
 ## 6 - 2 Scaled dot product attention
+
+<br>
 
 老師的教學影片中提到 : 
 
@@ -999,7 +1070,78 @@ attention_weights: tf.Tensor(
 5. 最後就是拿 權重 * V 得到最終 output。
 
 <br>
+<br>
+<br>
+<br>
 
 
+## 6 - 2 Multi-head attention
 
 <br>
+
+Multi-head attention 多頭注意力機制。老師在影片中有提到說 Multi-head attention
+的作用在於可以讓 Model 在計算時分別去注意一些特別的東西。痾....
+
+具體有哪些特別我還真不知道，實做過後看來，不過就是把詞向量拆分開運算，最後在合併起來而已。例如原本 4 維度的詞向量，我們拆 2 份就變成分別計算兩個 2 維向量。就這樣而已。部落格原文的 LeeMeng 老師也有給出他的解釋，以下引用老師的說法 :
+
+_"為何要那麼「搞剛」把本來 d_model 維的空間投影到多個維度較小的子空間（subspace）以後才各自進行注意力機制呢？這是因為這給予模型更大的彈性，讓它可以同時關注不同位置的子詞在不同子空間下的 representation，而不只是本來 d_model 維度下的一個 representation。"_  ---- LeeMeng
+
+OK，聽起來好像還好，再來看看這一張圖 : 
+
+![multi-head](imgs/en-to-ch-attention-map.png)
+
+這邊同一段翻譯，Model 一共切了 8 個 Head 做運算，可以很清楚的看到每一個 Head 看到的權重都不一樣。感覺像是 8 個大腦同步運算。透過這樣同時關注多個不同子空間裡頭的子詞的 representation，Transformer 最終可以生成更好的結果。
+
+<br>
+
+實現 Multi-head attention : 
+
+首先在實作前要先了解一點，我們切幾個頭不是想切多少就切多少，我們要考量以下 3 點。
+
+1. 詞向量大小一定要可以被頭的數量整除，這點應該不用多說，今天詞向量有 4 維，總不能說切三份來玩吧，4 維詞向量我們只能切 2 或 4 份。
+
+2. 機器效能。當機器不夠力，頭切的又多。這樣不是只會造成運算緩慢而以，還會造成爆記憶體。 2020 年買的一塊 GeForce RTX 2070 顯卡可以跑大概 8 頭，當然也其他參數之間互相制衡，這些都依實際情況做決定。
+
+3. 實際模型準確度。頭的數量其實是一個可調整的超參數，可長可短，有些時候頭太多反而效果變差，需要實際實驗找到最合適的數值。
+
+<br>
+
+定義切頭方法 : 
+
+```py
+
+def split_heads(x, d_model, num_heads):
+    """
+    split_heads 可以切割原本的張量資料變成 num_heads 個。
+
+    args:
+        x        : 輸入的張量 x.shape = (batch_size, seq_len, d_model)
+        d_model  : 詞向量大小
+        num_heads: 頭的數量
+    """
+
+  batch_size = tf.shape(x)[0]
+
+  # 我們要確保維度 `d_model` 可以被平分成 `num_heads` 個 `depth` 維度
+  assert d_model % num_heads == 0
+  depth = d_model // num_heads  # 分成多頭後每個向量的新維度大小
+
+  # 將最後一個 d_model 維度分成 num_heads 個 depth 維度。
+  # 最後一個維度變成兩個維度，張量 x 從 3 維到 4 維
+  # (batch_size, seq_len, num_heads, depth)
+  reshaped_x = tf.reshape(x, shape=(batch_size, -1, num_heads, depth)) 
+
+  # 將 head 的維度拉前使得最後兩個維度為子詞以及其對應的 depth 向量
+  # (batch_size, num_heads, seq_len, depth)
+  output = tf.transpose(reshaped_x, perm=[0, 2, 1, 3])
+```
+
+關於 `reshape` 與 `transpose`，不了解的可以看 [__這裡__](https://nbviewer.jupyter.org/github/Johnny1110/Deep_Learning_Note/blob/master/basic_tool_use/%E5%BC%B5%E9%87%8F%E9%87%8D%E5%A1%91%20%28%20reshape%20%29.ipynb)，如果不想實在不想了解這段 code 到底做了甚麼，也沒關係，你只要知道 input 跟 output 是甚麼就好。
+
+```py
+x.shape = (batch_size, seq_len, d_model) = (2, 8, 4)
+num_heads = 2
+depth = d_model // num_heads = 2
+
+output.shape = (batch_size, num_heads, seq_len, depth) = (2, 2, 8, 2)
+```
