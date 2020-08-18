@@ -554,7 +554,7 @@ print(pos_encoding)
 
 我們設這些 one hot vector 叫做 Pi，輸入的詞向量叫做 Xi。然後把它們連接起來，並乘上一個 __W__ : 
 
-![P4_1](imgs/P4_1.jpg)
+![P4_1](imgs/p4_1.jpg)
 
 這樣一看起來就好理解很多，又回到了 Model 的概念。然後我們把 __W__ 做分割，如下 : 
 
@@ -731,7 +731,7 @@ Decoder 在推算目標序列時，需要有遮罩的幫忙。甚麼是遮罩呢
 
 <br>
 
-padding mask 實作: 
+### padding mask : 
 
 ```py
 def create_padding_mask(seq):
@@ -782,6 +782,27 @@ array([[[[0., 0., 0., 0., 0., 0., 1., 1.]]],
 
 這樣的資料再進去 Model 做運算，當 Model 裡面輸出端用 'relu' 做激勵函數時，會把結果為負的值變 0。'relu' 激勵函數可以理解為 `max(seq, 0)`，白話意思就是把負數變 0。
 
+<br>
+<br>
+
+### look ahead mask：
+
+```py
+# 建立一個 2 維矩陣，維度為 (size, size)，
+def create_look_ahead_mask(size):
+  mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
+  return mask  # (seq_len, seq_len)
+```
+
+<br>
+
+關於 `tf.linalg.band_part()` 使用方法，請參考這一篇筆記[（點這裡！）](../../basic_tool_use/tf.linalg.band_part()，上下三角形.ipynb)
+
+
+
+
+<br>
+<br>
 <br>
 <br>
 
@@ -841,6 +862,19 @@ __q, k, v__ 以圖示展現出來效果 :
 ![p6_5](imgs/p6_5.jpg)
 
 <br>
+<br>
+
+---
+
+<br>
+
+這邊待會要涉及到 dot product 概念，需要高中矩陣乘法知識，如果忘記了，請點這邊複習一下 : 
+
+* [dot product 基礎](dot_product.md)
+
+<br>
+
+---
 
 scaled dot product attention 在 TensorFlow 裡的實作：
 
@@ -860,7 +894,8 @@ def scaled_dot_product_attention(q, k, v, mask):
   Returns:
     output, attention_weights
   """
-  # 將 `q`、 `k` 做點積再 scale
+  # 將 `q`、 `k` 做點積再 scale，(transpose_b=True 意思是讓第二個參數 k 先轉置)
+  # 轉置後相乘我想不必多說，就是 dot product 的觀念。
   matmul_qk = tf.matmul(q, k, transpose_b=True)  # (..., seq_len_q, seq_len_k)
   
   dk = tf.cast(tf.shape(k)[-1], tf.float32)  # 取得 seq_k 的序列長度
@@ -959,22 +994,12 @@ attention_weights: tf.Tensor(
 
 3. 將遮罩乘上 `-1e9` 之後加到上面結果中，其目的是在此處把應該要被忽略不計的值通通變成一個很大的負數。
 
-4. 將以上結果送入 softmax 函式中，求出加權值。(注意 ! 做到這一步我們已經成功求出了注意力權重了)
+4. 將以上結果送入 softmax 函式中，求出加權值。__（注意 ! 做到這一步我們已經成功求出了注意力權重了，並且上面第 3 步被遮罩助理過的負數將統統變 0）__
 
 5. 最後就是拿 權重 * V 得到最終 output。
 
 <br>
 
----
 
-<br>
-
-這邊涉及到 dot product 概念，需要高中矩陣乘法知識，如果忘記了，請點這邊複習一下 : 
-
-* [dot product 基礎](dot_product.md)
-
-<br>
-
----
 
 <br>
