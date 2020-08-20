@@ -719,7 +719,7 @@ https://leemeng.tw/images/transformer/transformer-nmt-encode-decode.mp4
 <br>
 <br>
 
-## 6 - 1 遮罩
+## 6-1 遮罩
 
 Decoder 在推算目標序列時，需要有遮罩的幫忙。甚麼是遮罩呢 ? 顧名思義就是讓他不要看到他不該看的東西。
 
@@ -753,7 +753,7 @@ array([[[[0., 0., 0., 0., 0., 0., 1., 1.]]],
        [[[0., 0., 0., 0., 0., 0., 0., 0.]]]], dtype=float32)>
 ```
 
-看一下，這個 Mask Tensor 的 shape 是 4 維的，4 維是為了做 broadcasting 運算，後面會實際計算一下。
+_看一下，這個 Mask Tensor 的 shape 是 4 維的，4 維的目的一是為了做 broadcasting 運算，二是為了 __"多頭機制"__。關於多頭機制會在下面一節說明，這邊先不要太過於糾結為甚麼多了二維。_
 
 拿這個 mask 跟 原本的那一句話做比對 : 
 
@@ -875,7 +875,7 @@ look_ahead_mask tf.Tensor(
 <br>
 <br>
 
-## 6 - 2 Scaled dot product attention
+## 6-2 Scaled dot product attention
 
 <br>
 
@@ -1075,7 +1075,7 @@ attention_weights: tf.Tensor(
 <br>
 
 
-## 6 - 2 Multi-head attention
+## 6-3 Multi-head attention
 
 <br>
 
@@ -1084,7 +1084,11 @@ Multi-head attention 多頭注意力機制。老師在影片中有提到說 Mult
 
 具體有哪些特別我還真不知道，實做過後看來，不過就是把詞向量拆分開運算，最後在合併起來而已。例如原本 4 維度的詞向量，我們拆 2 份就變成分別計算兩個 2 維向量。就這樣而已。部落格原文的 LeeMeng 老師也有給出他的解釋，以下引用老師的說法 :
 
-_"為何要那麼「搞剛」把本來 d_model 維的空間投影到多個維度較小的子空間（subspace）以後才各自進行注意力機制呢？這是因為這給予模型更大的彈性，讓它可以同時關注不同位置的子詞在不同子空間下的 representation，而不只是本來 d_model 維度下的一個 representation。"_  ---- LeeMeng
+<br>
+
+>_"為何要那麼「搞剛」把本來 d_model 維的空間投影到多個維度較小的子空間（subspace）以後才各自進行注意力機制呢？這是因為這給予模型更大的彈性，讓它可以同時關注不同位置的子詞在不同子空間下的 representation，而不只是本來 d_model 維度下的一個 representation。"_
+
+<br>
 
 OK，聽起來好像還好，再來看看這一張圖 : 
 
@@ -1136,12 +1140,370 @@ def split_heads(x, d_model, num_heads):
   output = tf.transpose(reshaped_x, perm=[0, 2, 1, 3])
 ```
 
-關於 `reshape` 與 `transpose`，不了解的可以看 [__這裡__](https://nbviewer.jupyter.org/github/Johnny1110/Deep_Learning_Note/blob/master/basic_tool_use/%E5%BC%B5%E9%87%8F%E9%87%8D%E5%A1%91%20%28%20reshape%20%29.ipynb)，如果不想實在不想了解這段 code 到底做了甚麼，也沒關係，你只要知道 input 跟 output 是甚麼就好。
+關於 `reshape` 與 `transpose`，不了解的可以看 [__這裡__](https://nbviewer.jupyter.org/github/Johnny1110/Deep_Learning_Note/blob/master/basic_tool_use/%E5%BC%B5%E9%87%8F%E9%87%8D%E5%A1%91%20%28%20reshape%20%29.ipynb)，如果不想實在不想了解這段 code 到底做了甚麼，也沒關係，你只要知道 input 跟 output 是甚麼就好，向下面這樣 :
 
 ```py
 x.shape = (batch_size, seq_len, d_model) = (2, 8, 4)
 num_heads = 2
 depth = d_model // num_heads = 2
 
-output.shape = (batch_size, num_heads, seq_len, depth) = (2, 2, 8, 2)
+output.shape = (batch_size, num_heads, seq_len, depth) = (2, 2, 8, 2) 
+
+# 有一定經驗的人從 (2, 2, 8, 2) 應該一眼就看的出來現在資料被  reshape 後的樣子
+# 再次說明一下 : 這批資料一共有 2 筆句子，每一筆句子被分成 2 個"頭"，每個頭有 8 個 seq 長度，每個 seq 有兩個維度。
+```
+
+<br>
+<br>
+
+切頭工作做完了，接下來該做的就是包裝一下 class 了:
+
+```py
+# 實作一個執行多頭注意力機制的 keras layer
+class MultiHeadAttention(tf.keras.layers.Layer):
+
+    # 初始化，建立參數 d_model(詞向量深度)，nm_heads(頭的數量)。
+    def __init__(self, d_model, num_heads):
+        super(MultiHeadAttention, self).__init__()
+        self.num_heads = num_heads
+        self.d_model = d_model
+
+        # 驗證 d_model 是否可以被 num_heads 整除
+        assert d_model % self.num_heads == 0  
+        # 每個頭的新詞向量深度
+        self.depth = d_model // self.num_heads  
+        
+        # 提供的 q k v 三個參數的線性轉換。
+        self.wq = tf.keras.layers.Dense(d_model)  
+        self.wk = tf.keras.layers.Dense(d_model)
+        self.wv = tf.keras.layers.Dense(d_model)
+        
+        # 多個 heads 串接之後通過的一次線性轉換
+        self.dense = tf.keras.layers.Dense(d_model)
+  
+    # 這個就是包裝過後的切頭公式
+    def split_heads(self, x, batch_size):
+        """把 x 最後一維切割成 (num_heads, depth).
+        傳置加重塑後 x 變這樣: (batch_size, num_heads, seq_len, depth)
+        """
+        x = tf.reshape(x, (batch_size, -1, self.num_heads, self.depth))
+        return tf.transpose(x, perm=[0, 2, 1, 3])
+  
+    # 定義這個方法之後主程式宣告完 class 之後就可以直接用呼叫了，這個晚一點會說明。
+    def __call__(self, v, k, q, mask):
+        batch_size = tf.shape(q)[0]
+        
+        # 把 q k v 必須都分別做一次線性轉換，老師的影片裡面有說明 q*w, k*w, v*w。
+        # w 是 AI 可以學習出來的
+        q = self.wq(q)  # (batch_size, seq_len, d_model)
+        k = self.wk(k)  # (batch_size, seq_len, d_model)
+        v = self.wv(v)  # (batch_size, seq_len, d_model)
+        
+        # q, k, v 分別切頭
+        q = self.split_heads(q, batch_size)  # (batch_size, num_heads, seq_len_q, depth)
+        k = self.split_heads(k, batch_size)  # (batch_size, num_heads, seq_len_k, depth)
+        v = self.split_heads(v, batch_size)  # (batch_size, num_heads, seq_len_v, depth)
+        
+        # 我們前面有實作一個 self-attention 的 func，這個時候就賣上用場了。
+        # 利用 broadcasting 讓每個句子的每個 head 的 qi, ki, vi 都各自進行注意力機制。
+        # 還記得前面 padding 產出的 shape 嗎? 一樣是四維的，就是為了呼應這邊切的多頭機制。
+        scaled_attention, attention_weights = scaled_dot_product_attention(
+            q, k, v, mask)
+        # scaled_attention.shape == (batch_size, num_heads, seq_len_q, depth)
+        # attention_weights.shape == (batch_size, num_heads, seq_len_q, seq_len_k)
+        
+        # 多頭算完之後記得要合併回來呀 ! 很重要!先 Transpose， seq 又變回第二維度了。
+        scaled_attention = tf.transpose(scaled_attention, perm=[0, 2, 1, 3])
+        concat_attention = tf.reshape(scaled_attention, 
+                                    (batch_size, -1, self.d_model)) 
+
+
+        # 合併好後通過最後一個線性轉換
+        output = self.dense(concat_attention)  # (batch_size, seq_len_q, d_model)
+        
+        return output, attention_weights
+```
+
+<br>
+
+定義好 class 後可以來實際測試一下 :
+
+
+```py
+# emb_inp.shape == (batch_size, seq_len, d_model)
+#               == (2, 8, 4)
+assert d_model == emb_inp.shape[-1]  == 4  # 實際上 d_model 不一定是 4，只是為了方便測試所以這邊寫死
+num_heads = 2  # 再次提醒，num_heads 必須要可以整除 d_model
+
+print(f"d_model: {d_model}")
+print(f"num_heads: {num_heads}\n")
+
+# 初始化一個 multi-head attention layer
+mha = MultiHeadAttention(d_model, num_heads)
+
+# q, k, v 都設定維 emb_inp。
+v = k = q = emb_inp
+padding_mask = create_padding_mask(inp)
+print("q.shape: ", q.shape)
+print("k.shape: ", k.shape)
+print("v.shape: ", v.shape)
+print("padding_mask.shape: ", padding_mask.shape)  # 注意這邊 mask 是一個 4 維張量。
+```
+
+輸出 : 
+
+```py
+d_model: 4
+num_heads: 2
+
+q.shape: (2, 8, 4)
+k.shape: (2, 8, 4)
+v.shape: (2, 8, 4)
+padding_mask.shape: (2, 1, 1, 8)  # 四維喔 ! 
+```
+<br>
+<br>
+
+產生計算結果 : 
+
+```py
+output, attention_weights = mha(v, k, q, mask)
+print("output.shape: ", output.shape)
+# attention_weights.shape 仍然保有多頭的樣子
+print("attention_weights.shape: ", attention_weights.shape)  
+print("---"*20)
+print("---"*20)
+print("output: ", output)
+```
+
+輸出 : 
+
+```py
+output.shape: (2, 8, 4)
+attention_weights.shape: (2, 2, 8, 8)
+---------------------------------------------------------
+---------------------------------------------------------
+output: tf.Tensor(
+[[[ 0.00862424  0.00463534  0.00123856  0.01982255]
+  [ 0.00860434  0.00464583  0.00125165  0.01984711]
+  [ 0.00863869  0.00461318  0.00122942  0.01981261]
+  [ 0.00858585  0.00465442  0.00125683  0.0198578 ]
+  [ 0.0086211   0.00462923  0.0012448   0.01983759]
+  [ 0.00860078  0.00464716  0.00125472  0.01985404]
+  [ 0.00865074  0.00461071  0.00122681  0.01980557]
+  [ 0.00865074  0.00461071  0.00122681  0.01980557]]
+
+ [[-0.00233657  0.02963993  0.01171194  0.03959805]
+  [-0.00234752  0.02964369  0.01171828  0.03960991]
+  [-0.00232748  0.02962957  0.01170804  0.03959192]
+  [-0.00233163  0.02963142  0.0117076   0.03959151]
+  [-0.00231678  0.02962143  0.01170276  0.03957902]
+  [-0.00234718  0.02964409  0.01171941  0.03961902]
+  [-0.00233476  0.029631    0.01171241  0.03959794]
+  [-0.00235306  0.02964601  0.01172148  0.03961948]]], shape=(2, 8, 4), dtype=float32)
+```
+
+前面在講 padding_mask 的時候不是說先不討論為甚麼是一個 4 維張量嗎，而不是一個三維 output，多出來的一維其實就是為了這邊可以跟切了 __"多頭"__ 的資料做 broadcasting。
+
+
+<br>
+
+----
+
+如果對 Multi-Head-Attention 運算過程還是不太了解，可以看一下 LeeMeng 老師部落格提供的影片，會比較好理解 -> [連結](https://leemeng.tw/images/transformer/multi-head-attention.mp4)
+
+---
+
+<br>
+<br>
+<br>
+<br>
+
+## 七丶打造 Encoder 與 Decoder
+
+<br>
+
+前面一個章節有看到一個架構圖，這邊重新拿出來審視一下 : 
+
+![p6_2](imgs/p6_2.jpg)
+
+接下來就是一步一步打造它們拉 ! 
+
+<br>
+<br>
+
+## 7-1 FFN (Feed-Forward Networks)
+
+架構圖中可以看到有一個部分 : 
+
+![P7_1](imgs/p7_1.jpg)
+
+### 先說明一下這一層存在的意義 : __FFN 可以從輸入的 d_model 維度裡頭擷取一些有用的資訊__
+
+<br>
+
+直接看 code 最快 : 
+
+```py
+# 建立 Transformer 裡 Encoder / Decoder layer 都有使用到的 Feed Forward 元件
+def point_wise_feed_forward_network(d_model, dff):
+  
+  # 此 Model 對輸入做兩次線性轉換，中間加了一個 ReLU activation func
+  return tf.keras.Sequential([
+      tf.keras.layers.Dense(dff, activation='relu'),  # (batch_size, seq_len, dff)
+      tf.keras.layers.Dense(d_model)  # (batch_size, seq_len, d_model)
+  ])
+```
+
+輸入跟輸出前後格式是一樣的，直白一點可以理解為我們把算出來的結果丟進去這個 Model 讓他 __"攪一攪"__。然後返給我們的輸出格式不能跑掉，但結果值會更加 __"有用"__。
+
+還是要稍微專業化一點解釋比較好，其實也不難，這個 Model 在做的事情分以下幾步 :
+
+* 輸入資料 `(batch_size, seq_len, d_model)`
+
+* 經過第一個神經層做一次線性轉換，原本 `d_model` 維度，傳換成 `dff` 維度，並套用 relu 方法。本層的輸出會是 `(batch_size, seq_len, dff)`
+
+    relu 有必要解釋一下，他其實就是一個方法 `max(x, 0)`。把所有負的值變 0，其他正值保留。
+
+* 最後一層再一次線性轉換把值轉回跟輸入時一樣的 shape `(batch_size, seq_len, d_model)`
+
+<br>
+
+### 還有一點 : 論文上的 `dff` 設為 2048， `d_model` 為 521，剛好是四倍，所以在訓練自己的 Model 時，盡量也比照論文 4 : 1 辦理。
+
+<br>
+<br>
+
+實際測試一個 FFN :
+
+```py
+batch_size = 64
+seq_len = 10
+d_model = 512
+dff = 2048
+
+x = tf.random.uniform((batch_size, seq_len, d_model))
+ffn = point_wise_feed_forward_network(d_model, dff)
+out = ffn(x)
+print("x.shape:", x.shape)
+print("out.shape:", out.shape)
+```
+
+輸出 : 
+
+```py
+x.shape: (64, 10, 512)  # (批次, 句長, 詞深)
+out.shape: (64, 10, 512)
+```
+
+<br>
+
+原文部落格中 LeeMeng 老師舉了一個例子證明 FFN 事實上對序列中的所有位置做的線性轉換都是一樣的。
+
+```py
+d_model = 4
+dff = 6
+
+# 建立一個小 FFN
+small_ffn = point_wise_feed_forward_network(d_model, dff)
+# 懂子詞梗的站出來
+dummy_sentence = tf.constant([[5, 5, 6, 6], # 第一個分詞
+                              [5, 5, 6, 6], # 第二個分詞
+                              [9, 5, 2, 7], # 第三個分詞
+                              [9, 5, 2, 7], # ...
+                              [9, 5, 2, 7]], dtype=tf.float32)
+small_ffn(dummy_sentence)
+```
+
+輸出 : 
+
+```py
+<tf.Tensor: id=193585, shape=(5, 4), dtype=float32, numpy=
+array([[ 2.8674245, -2.174698 , -1.3073452, -6.4233937], # 第一個分詞
+       [ 2.8674245, -2.174698 , -1.3073452, -6.4233937], # 第二個分詞 (跟第一個一樣)
+       [ 3.650207 , -0.973258 , -2.4126565, -6.5094995], # 第三個分詞
+       [ 3.650207 , -0.973258 , -2.4126565, -6.5094995], # ...
+       [ 3.650207 , -0.973258 , -2.4126565, -6.5094995]], dtype=float32)>
+```
+
+其實要說明的意思就是，這個線性轉換跟分詞所處第幾個位置無關，只跟實際值有關。
+
+<br>
+<br>
+
+## 7-2 EncoderLayer （Encoder 裡的一個層）
+
+<br>
+
+看一下 Encoder 的設計圖 : 
+
+![p7_2](imgs/p7_2.jpg)
+
+Encoder 裡面這些一層一層的合起來叫做一個 EncoderLayer : 
+
+![p7_3](imgs/p7_3.jpg)
+
+這四個合起來叫一層，Hulit-Head-Attention 與 Feed-Forward 這邊稱之為 Sub-Layer，出了 2 個 Sub-Layer 之外我們還可以看到 Add&Normal 步驟。具體 Add&Normal 在幹嘛起初我是真的無法理解，這邊我直接放 LeeMeng 老師的原話，不想理解就當背公式好了 : 
+
+<br>
+
+>_在 Add & Norm 步驟裡頭，每個 sub-layer 會有一個[殘差連結（residual connection）](https://www.cv-foundation.org/openaccess/content_cvpr_2016/papers/He_Deep_Residual_Learning_CVPR_2016_paper.pdf)來幫助減緩梯度消失（Gradient Vanishing）的問題。接著兩個 sub-layers 都會針對最後一維 d_model 做 [layer normalization](https://arxiv.org/abs/1607.06450)，將 batch 裡頭每個子詞的輸出獨立做轉換，使其平均與標準差分別靠近 0 和 1 之後輸出。另外在將 sub-layer 的輸出與其輸入相加之前，我們還會做點 regularization，對該 sub-layer 的輸出使用 dropout。總結一下。如果輸入是 x，最後輸出寫作 out 的話，則每個 sub-layer 的處理邏輯如下：_
+
+<br>
+
+```py
+sub_layer_out = Sublayer(x) # 先進 sub-layer 計算結果
+sub_layer_out = Dropout(sub_layer_out) # 對結果套用 dropout，做 regularization。
+out = LayerNorm(x + sub_layer_out) # 使其平均與標準差分別靠近 0 和 1 之後輸出
+```
+
+<br>
+
+後來我覺得還是要探求真理，所以挖掘了一下關於 LayerNormalize 與 Dropout 相關知識，這兩兄弟其實都是 Model 優話操作，相關知識我會整理一下放在另兩篇筆記中，有需求可以傳送過去看看 :
+
+1. LayerNormalize（[傳送](../BN2LN/README.md)）
+
+2. Dropout （[傳送](../Dropout/README.md)）
+
+<br>
+
+上面這一段話不想理解或不想傳送走的話，不多說就直接照搬 code 吧，佛系一點時間到了自然就會 :
+
+```py
+#  實作 EncoderLayer
+class EncoderLayer(tf.keras.layers.Layer):
+  # Transformer 論文內預設 dropout rate 為 0.1，其他參數略過。
+  def __init__(self, d_model, num_heads, dff, rate=0.1):
+    super(EncoderLayer, self).__init__()
+
+    # 建立 2 個 Sub-Layer mha丶ffn
+    self.mha = MultiHeadAttention(d_model, num_heads)
+    self.ffn = point_wise_feed_forward_network(d_model, dff)
+
+    # layer norm 很常在 RNN-based 的模型被使用。一個 sub-layer 配一個 layer norm
+    self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+    self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+    
+    # 一樣，一個 sub-layer 一個 dropout layer
+    self.dropout1 = tf.keras.layers.Dropout(rate)
+    self.dropout2 = tf.keras.layers.Dropout(rate)
+    
+  # 需要丟入 `training` 參數是因為 dropout 在訓練以及測試的行為有所不同
+  def call(self, x, training, mask):
+    # 除了 `attn`，其他張量的 shape 皆為 (batch_size, input_seq_len, d_model)
+    # attn.shape == (batch_size, num_heads, input_seq_len, input_seq_len)
+    
+    # sub-layer 1: MHA
+    # Encoder 利用注意機制關注自己當前的序列，因此 v, k, q 全部都是自己
+    # 另外別忘了我們還需要 padding mask 來遮住輸入序列中的 <pad> token
+    attn_output, attn = self.mha(x, x, x, mask)  
+    attn_output = self.dropout1(attn_output, training=training) 
+    out1 = self.layernorm1(x + attn_output)  
+    
+    # sub-layer 2: FFN
+    ffn_output = self.ffn(out1) 
+    ffn_output = self.dropout2(ffn_output, training=training)  # 記得 training
+    out2 = self.layernorm2(out1 + ffn_output)
+    
+    return out2
 ```
