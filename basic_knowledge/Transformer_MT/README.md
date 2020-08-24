@@ -1459,9 +1459,9 @@ out = LayerNorm(x + sub_layer_out) # 使其平均與標準差分別靠近 0 和 
 
 <br>
 
-後來我覺得還是要探求真理，所以挖掘了一下關於 LayerNormalize 與 Dropout 相關知識，這兩兄弟其實都是 Model 優話操作，相關知識我會整理一下放在另兩篇筆記中，有需求可以傳送過去看看 :
+後來我覺得還是要探求真理，所以挖掘了一下關於 LayerNormalization 與 Dropout 相關知識，這兩兄弟其實都是 Model 優話操作，相關知識我會整理一下放在另兩篇筆記中，有需求可以傳送過去看看 :
 
-1. LayerNormalize（[傳送](../BN2LN/README.md)）
+1. LayerNormalization（[傳送](../BN2LN/README.md)）
 
 2. Dropout （[傳送](../Dropout/README.md)）
 
