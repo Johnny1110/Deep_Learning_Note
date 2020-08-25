@@ -14,4 +14,4 @@
 
 3. [新聞分類(reuters 資料集)](reuters/新聞分類.ipynb)
 
-4. [波士頓房價預測(boston_housing 資料集)](/boston_housing/波士頓房價預測.ipynb)
+4. [波士頓房價預測(boston_housing 資料集)](boston_housing/波士頓房價預測.ipynb)

@@ -625,6 +625,8 @@ Decoder 在做翻譯的動作時，會對目前所進行翻譯位址進行考量
 
 <br>
 
+<div id="seq2seq">
+
 其實上面講的這些都簡化太多了，這邊有一張 Tensorflow 官方給出的原圖，說明 __seq2seq + 注意力機制__ 的圖示 : 
 
 ![p5_4](imgs/p5_4.jpg)
@@ -1481,29 +1483,1073 @@ class EncoderLayer(tf.keras.layers.Layer):
     self.ffn = point_wise_feed_forward_network(d_model, dff)
 
     # layer norm 很常在 RNN-based 的模型被使用。一個 sub-layer 配一個 layer norm
-    self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+    self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6) # 給一個小的 float 避免算標準差時除以 0。
     self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
     
     # 一樣，一個 sub-layer 一個 dropout layer
     self.dropout1 = tf.keras.layers.Dropout(rate)
     self.dropout2 = tf.keras.layers.Dropout(rate)
     
-  # 需要丟入 `training` 參數是因為 dropout 在訓練以及測試的行為有所不同
+  # 需要丟入 `training` 原因是什麼想知道可以去看 dropout 筆記
   def call(self, x, training, mask):
-    # 除了 `attn`，其他張量的 shape 皆為 (batch_size, input_seq_len, d_model)
-    # attn.shape == (batch_size, num_heads, input_seq_len, input_seq_len)
+    # 除了 `attn_output`，其他張量的 shape 皆為 (batch_size, input_seq_len, d_model)
+    # attn_output.shape == (batch_size, num_heads, input_seq_len, input_seq_len)
     
     # sub-layer 1: MHA
     # Encoder 利用注意機制關注自己當前的序列，因此 v, k, q 全部都是自己
-    # 另外別忘了我們還需要 padding mask 來遮住輸入序列中的 <pad> token
+    # 另外還需要 padding mask 來遮住輸入序列中的 <pad> token
     attn_output, attn = self.mha(x, x, x, mask)  
     attn_output = self.dropout1(attn_output, training=training) 
     out1 = self.layernorm1(x + attn_output)  
     
     # sub-layer 2: FFN
+    # 強調資料關鍵特徵
     ffn_output = self.ffn(out1) 
-    ffn_output = self.dropout2(ffn_output, training=training)  # 記得 training
+    ffn_output = self.dropout2(ffn_output, training=training)
     out2 = self.layernorm2(out1 + ffn_output)
     
     return out2
 ```
+
+<br>
+<br>
+<br>
+<br>
+
+## 7-3 DecoderLayer （Decoder 裡的一個層）
+
+<br>
+
+DecoderLayer 設計圖如下 : 
+
+![p7_4](imgs/p7_4.jpg)
+
+其實有 NncoderLayer 的經驗之後可以看出來每一個 subLayer 都會配有一個 Add&Norm，所以 DecoderLayer 一共有 3 個 SubLayers。他們分別為 `MaskedMultiHeadAttention`丶`MultiHeadAttention`丶`FeedForwardNetwork`。接下來就一步一步地來實作他們。
+
+<br>
+<br>
+
+
+### MaskedMultiHeadAttention
+
+<br>
+
+第一個黃色區塊 :
+
+![p7_5](imgs/p7_5.jpg)
+
+這個區塊是用來關注目標語言的，跟 EncoderLayer 的那個很像又不大一樣，在這個部分中，遮罩不是簡單的 padding_mask 而已了，而是需要 padding_mask 與 look_ahead_mask 的合併版，其實就是用之前設計好的 func 產出 2 組 mask 再相加而已 : 
+
+<br>
+
+兩個 mask : 
+
+```py
+padding_mask = [
+    [0, 0, 0, 0, 0, 1, 1],
+    [0, 0, 0, 0, 0, 1, 1],
+    [0, 0, 0, 0, 0, 1, 1],
+    [0, 0, 0, 0, 0, 1, 1],
+    [0, 0, 0, 0, 0, 1, 1],
+    [0, 0, 0, 0, 0, 1, 1],
+    [0, 0, 0, 0, 0, 1, 1],
+]
+
+look_ahead_mask = [
+    [0, 1, 1, 1, 1, 1, 1],
+    [0, 0, 1, 1, 1, 1, 1],
+    [0, 0, 0, 1, 1, 1, 1],
+    [0, 0, 0, 0, 1, 1, 1],
+    [0, 0, 0, 0, 0, 1, 1],
+    [0, 0, 0, 0, 0, 0, 1],
+    [0, 0, 0, 0, 0, 0, 0],
+]
+```
+
+<br>
+
+合併兩個 mask，使用 maximum 的方式 : 
+
+```py
+# 合併 mask
+combined_mask = tf.maximum(tar_padding_mask, look_ahead_mask)
+```
+
+<br>
+
+combind_mask 結果 : 
+```py
+combind_mask = [
+    [0, 1, 1, 1, 1, 1, 1],
+    [0, 0, 1, 1, 1, 1, 1],
+    [0, 0, 0, 1, 1, 1, 1],
+    [0, 0, 0, 0, 1, 1, 1],
+    [0, 0, 0, 0, 0, 1, 1],
+    [0, 0, 0, 0, 0, 1, 1],
+    [0, 0, 0, 0, 0, 1, 1],
+]
+```
+
+在第一個 MHA（Multi-Head-Attention）階段就把這個 combind_mask 丟進去就可以了，`q, k, v` 三個參數都設定為目標語言的訓練資料 input。其實就跟 EncoderLayer 的一模一樣，只是換了一個 mask 而已。
+
+<br>
+<br>
+
+再來看看另一個區塊 : 
+
+![p7_6](imgs/p7_6.jpg)
+
+這是繼上面的目標語言注意力機制運算過後銜接的 Layer。特別的是，看一下圖片我們可以清楚的看到標出的紅藍框框。紅色那端的 input 是從 EncoderLayer 那邊接進來的，也就是說我們會需要用到來源語言的運算結果，並且與藍色部分也就是我們的目標語言運運算結果進行一次 MHA 運算。實際上的 code 如下這樣 : 
+
+```py
+d_model = 4
+num_head = 2
+mha = MultiHeadAttention(d_model, num_heads)
+
+...
+
+# enc_output 就是 EncoderLayer 的 output(紅色框)。
+# out 對應的是前一層的編碼計算結果(藍色框)。
+# mha 把 q 設定為 out, v 與 k 設定為 enc_output。
+attn2, attn_weights_block2 = mha(enc_output, enc_output, out, inp_padding_mask)
+```
+
+<br>
+<br>
+
+綜合以上其實就是 EncoderLayer 裡面的所有重點了。通俗化說就是 Decoder 在生成中文字詞時除了參考已經生成的中文字以外，也會去關注 Encoder 輸出的英文子詞。
+
+<br>
+<br>
+
+DecoderLayer 實現 : 
+
+```py
+class DecoderLayer(tf.keras.layers.Layer):
+  def __init__(self, d_model, num_heads, dff, rate=0.1):
+    super(DecoderLayer, self).__init__()
+
+    # 3 個 sub-layers : 自注意(目標語系)的 MHA, 關注 Encoder 輸出的 MHA & FFN
+    self.mha1 = MultiHeadAttention(d_model, num_heads)
+    self.mha2 = MultiHeadAttention(d_model, num_heads)
+    self.ffn = point_wise_feed_forward_network(d_model, dff)
+ 
+    # 3 個 sub-layer 就用 3 個 LayerNorm 與 Dropout
+    self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+    self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+    self.layernorm3 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+
+    self.dropout1 = tf.keras.layers.Dropout(rate)
+    self.dropout2 = tf.keras.layers.Dropout(rate)
+    self.dropout3 = tf.keras.layers.Dropout(rate)
+    
+    
+  def call(self, x, enc_output, training, 
+           combined_mask, inp_padding_mask):
+    # 所有 sub-layers 的主要輸出皆為 (batch_size, target_seq_len, d_model)
+    # enc_output 為 Encoder 輸出序列，shape 為 (batch_size, input_seq_len, d_model)
+    # attn_weights_block_1 為 (batch_size, num_heads, target_seq_len, target_seq_len)
+    # attn_weights_block_2 為 (batch_size, num_heads, target_seq_len, input_seq_len)
+
+    # sub-layer 1: Decoder layer 對自己的目標語系輸出序列做注意力。
+    # 同時需要加入 combined_mask 來避免前面已生成的子詞關注到未來的子詞以及 <pad>
+    attn1, attn_weights_block1 = self.mha1(x, x, x, combined_mask)
+    attn1 = self.dropout1(attn1, training=training)
+    out1 = self.layernorm1(attn1 + x)
+    
+    # sub-layer 2: Decoder layer 關注 Encoder 的輸出
+    # 一樣需要對 Encoder 的輸出套用 padding mask 避免關注到 <pad>
+    attn2, attn_weights_block2 = self.mha2(
+        enc_output, enc_output, out1, inp_padding_mask)  # (batch_size, target_seq_len, d_model)
+    attn2 = self.dropout2(attn2, training=training)
+    out2 = self.layernorm2(attn2 + out1)  # (batch_size, target_seq_len, d_model)
+    
+    # sub-layer 3: FFN
+    ffn_output = self.ffn(out2)  # (batch_size, target_seq_len, d_model)
+    ffn_output = self.dropout3(ffn_output, training=training)
+    out3 = self.layernorm3(ffn_output + out2)  # (batch_size, target_seq_len, d_model)
+    
+    # 除了主要輸出 `out3` 以外，輸出 multi-head 注意權重方便之後理解模型內部狀況
+    return out3, attn_weights_block1, attn_weights_block2
+```
+
+以上就是 DecoderLayer 的全部。
+
+<br>
+<br>
+<br>
+<br>
+
+---
+
+<br>
+
+一個真正的 Encoder 或 Decoder 裡面部會只有一個 "層"。比方說上面的 EncoderLayer 為甚麼不直接叫 Encoder 就好了呢 ? 因為在一個真正的 Encoder 之中，可以有很多個像 EncoderLayer 這樣的 "層" 疊加。
+
+其實將上面的內容實作出來後後面就簡單很多了，基本都是一些拼裝動作。下面將真正的介紹 Enocder 與 Decoder。
+
+<br>
+
+---
+
+<br>
+<br>
+<br>
+<br>
+
+## 7-4 Encoder
+
+<br>
+
+在 Encoder 裡面，我們需要把詞嵌入丶位置編碼以及 EncoderLayer 組裝起來。
+
+<br>
+
+![p7_7](imgs/p7_7.jpg)
+
+我開頭畫的圖好像畫錯了 orz...  Encoder 那一塊應該是 EncoderLayer 的，不過算了，能看懂就好。
+
+
+```py
+class Encoder(tf.keras.layers.Layer):
+  # 初始化參數 : 
+  # num_layers : 需要幾層 EncoderLayer 就輸入多少。
+  # d_model : 詞向量維度大小。
+  # num_heads : 切頭個數，要可以被 d_model 整除。
+  # dff : FFN 神經元個數，不可以低於 d_model。
+  # input_vocab_size : 來源字典大小。
+  # rate : droprate 大小，基本上用預設 0.1 就可以了，不用調。
+  def __init__(self, num_layers, d_model, num_heads, dff, input_vocab_size, 
+               rate=0.1):
+    super(Encoder, self).__init__()
+
+    self.d_model = d_model
+    self.embedding = tf.keras.layers.Embedding(input_vocab_size, d_model)
+    self.pos_encoding = positional_encoding(input_vocab_size, self.d_model)
+    
+    # 建立 `num_layers` 個 EncoderLayers
+    self.enc_layers = [EncoderLayer(d_model, num_heads, dff, rate) for _ in range(num_layers)]
+    # 建立一個 Dropout
+    self.dropout = tf.keras.layers.Dropout(rate)
+        
+  def call(self, x, training, mask):
+    # 輸入的 x.shape == (batch_size, input_seq_len)
+    input_seq_len = tf.shape(x)[1]
+    
+    
+    x = self.embedding(x)  # 先將 2 維的索引序列轉成 3 維的詞嵌入張量
+    x *= tf.math.sqrt(tf.cast(self.d_model, tf.float32))  # 並依照論文乘上 sqrt(d_model)
+    x += self.pos_encoding[:, :input_seq_len, :] # 再加上對應長度的位置編碼
+
+    # 對 embedding 跟位置編碼的總合做 regularization
+    x = self.dropout(x, training=training)
+    
+    # 通過 N 個 EncoderLayer 做編碼
+    for i, enc_layer in enumerate(self.enc_layers):
+      x = enc_layer(x, training, mask)
+
+    return x 
+```
+
+<br>
+<br>
+
+實際使用看看 : 
+
+```py
+num_layers = 2 # 2 層的 Encoder
+d_model = 4 # 詞向量深度
+num_heads = 2 # 切 2 頭
+dff = 8  # FFN 神經元個數
+input_vocab_size = subword_encoder_en.vocab_size + 2 # 加上 <BOS><EOS> 的字典長度
+
+# 初始化一個 Encoder
+encoder = Encoder(num_layers, d_model, num_heads, dff, input_vocab_size)
+
+# 將 2 維的索引序列丟入 Encoder 做編碼
+enc_out = encoder(inp, training=False, mask=None) # 這邊關閉 dropout，不使用 mask
+print("inp:", inp)
+print("-" * 20)
+print("enc_out:", enc_out)
+```
+
+<br>
+輸出: 
+
+```py
+inp: tf.Tensor(
+[[8135  105   10 1304 7925 8136    0    0]
+ [8135   17 3905 6013   12 2572 7925 8136]], shape=(2, 8), dtype=int64)
+---------------------------------------------------
+enc_out: tf.Tensor(
+[[[-0.80654097 -0.5846039  -0.31439844  1.7055433 ]
+  [-0.46891153 -0.57408124 -0.6840381   1.727031  ]
+  [-0.319709   -0.17782518 -1.1191479   1.616682  ]
+  [-0.49274105  0.26990706 -1.2412689   1.4641027 ]
+  [-0.88477194  0.16279429 -0.8493918   1.5713693 ]
+  [-0.96625364 -0.25279218 -0.4533522   1.6723981 ]
+  [-0.8476429  -0.5615218  -0.28872433  1.6978891 ]
+  [-0.61957765 -0.5919263  -0.51938564  1.7308894 ]]
+
+ [[-0.8083886  -0.56457365 -0.33460823  1.7075704 ]
+  [-0.50152016 -0.5214133  -0.7037289   1.7266623 ]
+  [-0.34244898 -0.11313835 -1.1444559   1.6000432 ]
+  [-0.5072439   0.21401608 -1.2050328   1.4982607 ]
+  [-0.88611245  0.26368466 -0.9036027   1.5260304 ]
+  [-0.96629447 -0.21083635 -0.49055386  1.6676848 ]
+  [-0.86832803 -0.5383212  -0.28836083  1.6950101 ]
+  [-0.6246328  -0.57586765 -0.5305909   1.7310913 ]]], shape=(2, 8, 4), dtype=float32)
+```
+
+<br>
+<br>
+<br>
+<br>
+
+## 7-5 Decoder
+
+<br>
+
+Decoder 跟 Encoder 說實話，幾乎都一樣這一次不帶註解應該都可以看得懂 :
+
+```py
+class Decoder(tf.keras.layers.Layer):
+  def __init__(self, num_layers, d_model, num_heads, dff, target_vocab_size, 
+               rate=0.1):
+    super(Decoder, self).__init__()
+
+    self.d_model = d_model
+    
+    self.embedding = tf.keras.layers.Embedding(target_vocab_size, d_model)
+    self.pos_encoding = positional_encoding(target_vocab_size, self.d_model)
+    
+    self.dec_layers = [DecoderLayer(d_model, num_heads, dff, rate) for _ in range(num_layers)]
+    self.dropout = tf.keras.layers.Dropout(rate)
+  
+  def call(self, x, enc_output, training, combined_mask, inp_padding_mask):
+    
+    tar_seq_len = tf.shape(x)[1]
+    attention_weights = {}  # 用來存放每個 Decoder layer 的注意權重
+    
+    x = self.embedding(x)  # (batch_size, tar_seq_len, d_model)
+    x *= tf.math.sqrt(tf.cast(self.d_model, tf.float32))
+    x += self.pos_encoding[:, :tar_seq_len, :]
+    x = self.dropout(x, training=training)
+
+    
+    for i, dec_layer in enumerate(self.dec_layers):
+      x, block1, block2 = dec_layer(x, enc_output, training, combined_mask, inp_padding_mask)
+      
+      # 將從每個 Decoder layer 取得的注意權重全部存下來回傳，方便我們觀察
+      attention_weights['decoder_layer{}_block1'.format(i + 1)] = block1
+      attention_weights['decoder_layer{}_block2'.format(i + 1)] = block2
+    
+    # x.shape == (batch_size, tar_seq_len, d_model)
+    return x, attention_weights
+```
+
+<br>
+
+實際使用看看 : 
+
+```py
+
+num_layers = 2 # 2 層的 Decoder
+d_model = 4 # 詞向量深度
+num_heads = # 切頭個數
+dff = 8 # FFN 神經元個數
+target_vocab_size = subword_encoder_zh.vocab_size + 2 # 目標語系字典 + <BOS><EOS> 大小
+
+# inp 遮罩
+inp_padding_mask = create_padding_mask(inp)
+
+#combined 遮罩
+look_ahead_mask = create_look_ahead_mask(tar.shape[1])
+tar_padding_mask = create_padding_mask(tar)
+combined_mask = tf.math.maximum(tar_padding_mask, look_ahead_mask)
+
+# 初始化一個 Decoder
+decoder = Decoder(num_layers, d_model, num_heads, dff, target_vocab_size)
+
+# 將 2 維的索引序列以及遮罩丟入 Decoder
+print("tar:", tar)
+print("-" * 20)
+print("enc_out:", enc_out)
+print("-" * 20)
+dec_out, attn = decoder(tar, enc_out, training=False, 
+                        combined_mask=combined_mask,
+                        inp_padding_mask=inp_padding_mask)
+print("dec_out:", dec_out)
+```
+
+<br>
+
+輸出 : 
+
+```py
+tar: tf.Tensor(
+[[4201   10  241   80   27    3 4202    0    0    0]
+ [4201  162  467  421  189   14    7  553    3 4202]], shape=(2, 10), dtype=int64)
+--------------------
+enc_out: tf.Tensor(
+[[[-0.80654097 -0.5846039  -0.31439844  1.7055433 ]
+  [-0.46891153 -0.57408124 -0.6840381   1.727031  ]
+  [-0.319709   -0.17782518 -1.1191479   1.616682  ]
+  [-0.49274105  0.26990706 -1.2412689   1.4641027 ]
+  [-0.88477194  0.16279429 -0.8493918   1.5713693 ]
+  [-0.96625364 -0.25279218 -0.4533522   1.6723981 ]
+  [-0.8476429  -0.5615218  -0.28872433  1.6978891 ]
+  [-0.61957765 -0.5919263  -0.51938564  1.7308894 ]]
+
+ [[-0.8083886  -0.56457365 -0.33460823  1.7075704 ]
+  [-0.50152016 -0.5214133  -0.7037289   1.7266623 ]
+  [-0.34244898 -0.11313835 -1.1444559   1.6000432 ]
+  [-0.5072439   0.21401608 -1.2050328   1.4982607 ]
+  [-0.88611245  0.26368466 -0.9036027   1.5260304 ]
+  [-0.96629447 -0.21083635 -0.49055386  1.6676848 ]
+  [-0.86832803 -0.5383212  -0.28836083  1.6950101 ]
+  [-0.6246328  -0.57586765 -0.5305909   1.7310913 ]]], shape=(2, 8, 4), dtype=float32)
+--------------------
+dec_out: tf.Tensor(
+[[[-0.5437632  -1.055963    1.6090912  -0.0093651 ]
+  [-0.35729456 -1.2363737   1.5295789   0.06408926]
+  [ 0.35950443 -1.4217519   1.3327445  -0.27049693]
+  [ 0.00910451 -1.3681054   1.4556323  -0.09663116]
+  [-0.39842203 -1.0891637   1.6237149  -0.13612938]
+  [-0.41910946 -1.0254465   1.6521797  -0.20762381]
+  [-0.36797434 -1.036104    1.6521349  -0.2480565 ]
+  [-0.19375193 -1.1218892   1.6165614  -0.30092025]
+  [ 0.40127647 -1.3597702   1.3540744  -0.39558053]
+  [ 0.17590097 -1.419068    1.3905344  -0.14736754]]
+
+ [[-0.54991776 -1.0509207   1.6102997  -0.00946123]
+  [-0.3790077  -1.2450974   1.514628    0.10947719]
+  [ 0.1746773  -1.3877552   1.415193   -0.20211506]
+  [-0.03870562 -1.3375971   1.4825788  -0.10627584]
+  [-0.43508232 -1.067575    1.6293938  -0.12673649]
+  [-0.41048303 -1.0317237   1.6503688  -0.20816201]
+  [-0.3626595  -1.0360833   1.652463   -0.25372016]
+  [-0.24817836 -1.1092765   1.6238651  -0.26641032]
+  [ 0.1850568  -1.3670969   1.4271388  -0.2450987 ]
+  [ 0.09142628 -1.3988855   1.4218552  -0.11439597]]], shape=(2, 10, 4), dtype=float32)
+```
+
+<br>
+<br>
+<br>
+<br>
+
+----
+
+<br>
+
+## 八丶Transormer
+
+<br>
+
+快要到結尾了，讓我們再回頭看看一開始的那個架構圖，我們會發現幾乎都快要被我們實現了。現在只差這一塊 : 
+
+![8-1](imgs/p8_1.jpg)
+
+<br>
+
+其實我應該在一開始先說明一件事，就是定義最終 Model 輸出是甚麼。現在說有點晚，不過也可以。
+
+我們最終輸出會是一個這樣 shape 的 Tensor : 
+
+```py
+output.shape = (batch_size, seq_len, tar_vocab_len)
+```
+
+<br>
+
+甚麼意思呢 ? `batch_size` 不用解釋，`seq_len` 指一句話的自詞長度，`tar_vocab_len` 指目標語系的字典大小。有深度學習經驗的人應該很容易理解這個 output 的意義。
+
+假如今天輸出的 seq_len 為 8，意思是說這一句話有 8 個分詞。tar_vocab_len 為 5000 代表當前這個分詞可能是哪一個分詞的機率。也就是說，字典中每一個分詞都有機會是當前的這個分詞，看誰數值大選誰喽 !
+
+<br>
+<br>
+
+如果以上都能理解沒問題的話，那就可以來實作 Transormer 了 : 
+
+```py
+class Transformer(tf.keras.Model):
+  # 初始化參數 :
+  # num_layers : encoder 與 decoder 的層數
+  # d_model: 詞向量深度
+  # num_heads : 切頭個數
+  # dff : FFN 神經元個數
+  # input_vocab_size : 來源語言字典大小
+  # target_vocab_size : 目標語言大小
+  # rate : droprate 預設 0.1 不用改
+  def __init__(self, num_layers, d_model, num_heads, dff, input_vocab_size, target_vocab_size, rate=0.1):
+    super(Transformer, self).__init__()
+
+    self.encoder = Encoder(num_layers, d_model, num_heads, dff, input_vocab_size, rate)
+    self.decoder = Decoder(num_layers, d_model, num_heads, dff, target_vocab_size, rate)
+    # 這個 FFN 輸出跟中文字典一樣大的 logits 數，等通過 softmax 就代表每個中文字的出現機率
+    self.final_layer = tf.keras.layers.Dense(target_vocab_size)
+  
+  # enc_padding_mask 跟 dec_padding_mask 都是英文序列的 padding mask，
+  # 只是一個給 Encoder layer 的 MHA 用，一個是給 Decoder layer 的 MHA 2 使用
+  def call(self, inp, tar, training, enc_padding_mask, combined_mask, dec_padding_mask):
+
+    # enc_output.shape == (batch_size, inp_seq_len, d_model)
+    enc_output = self.encoder(inp, training, enc_padding_mask)  
+    
+    # dec_output.shape == (batch_size, tar_seq_len, d_model)
+    dec_output, attention_weights = self.decoder(tar, enc_output, training, combined_mask, dec_padding_mask)
+    
+    # final_output.shape == (batch_size, tar_seq_len, target_vocab_size)
+    final_output = self.final_layer(dec_output)  
+    
+    return final_output, attention_weights
+```
+
+__注意 ! 到這邊為止的輸出 `final_output` 還並不是真正的 vocab 機率分佈，還沒有經過 softmax。__
+
+<br>
+<br>
+
+實際使用看看 : 
+
+```py
+# 超參數
+num_layers = 1
+d_model = 4
+num_heads = 2
+dff = 8
+
+input_vocab_size = subword_encoder_en.vocab_size + 2
+output_vocab_size = subword_encoder_zh.vocab_size + 2
+
+# 訓練時用前一個字來預測下一個中文字，等一下會解釋。
+tar_inp = tar[:, :-1]
+tar_real = tar[:, 1:]
+
+# 來源語言遮罩 (inp_padding_mask)
+inp_padding_mask = create_padding_mask(inp)
+# 目標語言遮罩(combinded_mask 與 tar_padding_mask)。
+tar_padding_mask = create_padding_mask(tar_inp)
+look_ahead_mask = create_look_ahead_mask(tar_inp.shape[1])
+combined_mask = tf.math.maximum(tar_padding_mask, look_ahead_mask)
+
+# 建立 transformer
+transformer = Transformer(num_layers, d_model, num_heads, dff, input_vocab_size, output_vocab_size)
+
+# 將英文、中文序列丟入取得 Transformer 預測下個中文字的結果
+predictions, attn_weights = transformer(inp, tar_inp, False, inp_padding_mask, combined_mask, inp_padding_mask)
+
+print("tar:", tar)
+print("-" * 20)
+print("tar_inp:", tar_inp)
+print("-" * 20)
+print("tar_real:", tar_real) # 這一部分我們暫時還用不到
+print("-" * 20)
+print("predictions:", predictions)
+```
+
+<br>
+
+輸出 :
+
+```py
+tar: tf.Tensor(
+[[4201   10  241   80   27    3 4202    0    0    0]
+ [4201  162  467  421  189   14    7  553    3 4202]], shape=(2, 10), dtype=int64)
+--------------------
+tar_inp: tf.Tensor(
+[[4201   10  241   80   27    3 4202    0    0]
+ [4201  162  467  421  189   14    7  553    3]], shape=(2, 9), dtype=int64)
+--------------------
+tar_real: tf.Tensor(
+[[  10  241   80   27    3 4202    0    0    0]
+ [ 162  467  421  189   14    7  553    3 4202]], shape=(2, 9), dtype=int64)
+--------------------
+predictions: tf.Tensor(
+[[[ 0.00929452 -0.01123782  0.05421777 ... -0.01170466  0.00628542
+   -0.07576236]
+  [ 0.03640017 -0.01885041  0.05113849 ... -0.02349908  0.01716622
+   -0.06729948]
+  [ 0.05617092 -0.02265774  0.04667147 ... -0.02913139  0.0241506
+   -0.05331099]
+  ...
+  [ 0.00905135 -0.01058669  0.05486142 ... -0.01039154  0.0058039
+   -0.07445519]
+  [ 0.02215609 -0.01478041  0.05375389 ... -0.0170105   0.01135763
+   -0.07241639]
+  [ 0.0478656  -0.02148081  0.04837158 ... -0.02759764  0.02148173
+   -0.06043392]]
+
+ [[ 0.00996658 -0.01115559  0.05453676 ... -0.0114185   0.00637141
+   -0.07500792]
+  [ 0.03897631 -0.01930442  0.0508956  ... -0.02409907  0.01803425
+   -0.0656432 ]
+  [ 0.05387272 -0.02244362  0.04702405 ... -0.02893805  0.02348556
+   -0.05554678]
+  ...
+  [ 0.01048942 -0.01085559  0.05502523 ... -0.01070841  0.0062833
+   -0.07385261]
+  [ 0.02370835 -0.01504852  0.05381611 ... -0.01732858  0.01186723
+   -0.07158875]
+  [ 0.04920105 -0.02166032  0.0481827  ... -0.02781233  0.02190085
+   -0.05933255]]], shape=(2, 9, 4203), dtype=float32)
+```
+
+<br>
+
+看到這邊，會有疑問的應該就是關於 `tar_inp` 與 `tar_real` 這兩個了。下面來解釋一下。
+
+首先要回憶一下先前提到的，decoder 生成字的觀念[（點這邊快速傳送回去複習）](#seq2seq)。如果還記得，或者複習完了就可以繼續往下看了喔 !
+
+假如一個中文句子如下 :
+
+```py
+tar = ["<BOS>", "你", "好", "世", "界", "<EOS>"]
+```
+
+我們把句子切割一下 : 
+
+```py
+tar_inp = tar[:, :-1]
+tar_real = tar[:, 1:]
+```
+
+結果會是 : 
+
+```py
+tar_inp = ["<BOS>", "你", "好", "世", "界"]
+tar_real = ["你", "好", "世", "界", "<EOS>"]
+```
+
+在進入 Transformer 運算時，我們需要丟給他 `tar_inp`。
+
+用語言簡要形容一下 Decoder 的計算過程，因為加入了 combind_mask 的關係，所以一開始會先拿到 tar_inp 的 "\<BOS\>" 分詞，因為看不到後面接著是甚麼詞，所以這邊就只能全力關注第一個分詞 "\<BOS\>" 並開始運算。之後拿著這第一個分詞 \<BOS\> 的運算結果，與 Encoder 英文再做運算產出結果。
+
+我們的 `tar_real` 要在一切都算完之後去跟 Transformer 結果做比對，算損失函數並調整 Model 參數。所以 `tar_real` 其實就是我們最希望看到 model 給出的答案。
+
+給 "\<BOS\>" 與 `enc_output` 就要產出 "你"，給 "\<BOS\> Hello" 與  `enc_output` 就應該產出 "好"，大致上就是這樣的一個道理。
+
+<br>
+
+如果還是不理解，這邊有影片可以更加幫助理解，建議多看幾遍。這邊很重要，必須要理解之後才可以繼續。[（點這裡）](https://leemeng.tw/images/transformer/how-sequence-generation-work.mp4)
+
+<br>
+<br>
+<br>
+<br>
+
+---
+
+<br>
+
+## 九丶損失函數
+
+<br>
+
+之前提到了我們的 output 是在做 vocab 的機率分佈，可以理解為是一個多類別分類問題。在 Deep Learning 實作筆記部分，我有記錄過做多類別分類問題 loss func 要選擇 `SparseCategoricalCrossentrop`。
+
+```py
+loss_object = tf.keras.losses.SparseCategoricalCrossentrop(from_logits=True, reduction='none')
+```
+
+* `from_logits` 參數設為 `True` 是因為從 Transformer 得到的預測還沒有經過 softmax，因此加總還不等於 1：
+
+* `reduction` 參數設為 none，讓 loss_object 不要把每個位置的 error 加總。而這是因為我們之後要手動把 \<pading\> 出現的位置的損失捨棄不計。
+
+<br>
+
+定義 loss_func : 
+
+```py
+def loss_function(real, pred):
+  # 這次的 mask 將 real 序列中不等於 0 的位置視為 1，其餘為 0 
+  mask = tf.math.logical_not(tf.math.equal(real, 0))
+  # 照樣計算所有位置的 cross entropy 但不加總
+  loss_ = loss_object(real, pred)
+  mask = tf.cast(mask, dtype=loss_.dtype) # 統一型別
+  loss_ *= mask  # 只計算非 <pad> 位置的損失 
+  
+  return tf.reduce_mean(loss_) # 計算 loss 張量所有數字的平均值
+```
+
+<br>
+<br>
+<br>
+<br>
+
+---
+
+<br>
+
+## 十丶Optimizer
+
+<br>
+
+提升器的部分，我們選擇使用 Adam，以及自定義的 learning rate scheduler。建立 `scheduler` 的目的是讓 learning_rates 在前期 （`warmup_step`）呈線性增長。在那之後便開始跟步驟數 step_num 的反平方根成比例下降。關於 learning_rates 的概念對於 deep learning 來說還蠻重要的，這邊分享一下[學習資源（時間有調好）](https://youtu.be/yKKNr-QKz2Q?t=401)。Hung-yi Lee 老師在上 Gradient Descent 的章節時有教到，建議有空把整個影片都看過一遍。
+
+<br>
+
+這邊直接貼上 Tensorflow 的官方範例 :
+
+```py
+class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
+  # 論文預設 `warmup_steps` = 4000，4000 個 step 之後開始降低 learning_rates
+  def __init__(self, d_model, warmup_steps=4000):
+    super(CustomSchedule, self).__init__()
+    self.d_model = tf.cast(d_model, tf.float32)
+    self.warmup_steps = warmup_steps
+    
+  def __call__(self, step):
+    arg1 = tf.math.rsqrt(step)
+    arg2 = step * (self.warmup_steps ** -1.5)
+    
+    return tf.math.rsqrt(self.d_model) * tf.math.minimum(arg1, arg2)
+  
+# 將客製化 learning rate schdeule 丟入 Adam opt.
+# Adam opt. 的參數都跟論文相同
+learning_rate = CustomSchedule(d_model)
+optimizer = tf.keras.optimizers.Adam(learning_rate, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+```
+
+<br>
+<br>
+<br>
+<br>
+
+---
+
+<br>
+
+## 十一丶正式開始訓練
+
+<br>
+
+好啦，以上我們已經把準備工作做完了，接下來就要開始正式訓練了。前面的知識都吸收沒問題之後，就做好準備繼續往下咯 !
+
+<br>
+
+### 1. 超參數設定
+
+```py
+#######################################
+# tensorflow-gpu 配置:                 #
+# tensorflow-gpu == 2.0.0             #
+# CuDNN == 7.4                        #
+# CUDA == 10                          #
+# Python == 3.7                       #
+# 顯示卡 == GeForce 940 MX             #
+#######################################
+
+filename = "wmt.txt" # 讀取檔資料，這個資料 github 上有提供。
+TOKEN_MAX_LEN = 80 # 可接受最長分詞序列
+BATCH_SIZE = 64  # 64 筆資料綁成一批
+BUFFER_SIZE = 3000
+
+num_layers = 6  # 幾層
+d_model =512  # 詞向量深度
+dff = 2048  # FFN 神經元個數
+num_heads = 8  # multi-head 個數
+dropout_rate = 0.1
+EPOCHS = 200 # 訓練週期
+
+# 讓 numpy 不要顯示科學記號
+np.set_printoptions(suppress=True)
+
+# GPU 設定
+print("GPU Available: ", tf.test.is_gpu_available())
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+# 定義一些之後在儲存檔案時會用到的路徑變數
+output_dir = "nmt"
+en_vocab_file = os.path.join(output_dir, "en_vocab")
+zh_vocab_file = os.path.join(output_dir, "zh_vocab")
+checkpoint_path = os.path.join(output_dir, "checkpoints")
+log_dir = os.path.join(output_dir, 'logs')
+
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+```
+
+上面沒有甚麼需要多講的，基本設定而已。
+
+<br>
+<br>
+
+### 2. 載入資料
+
+```py
+train_examples, size = get_MT_TFDS(filename)
+
+# 建立或載入英文字典
+subword_encoder_en = build_en_vacab(en_vocab_file, train_examples)
+subword_encoder_zh = build_zh_vacab(zh_vocab_file, train_examples)
+# 自己幫忙把 <BOS><EOS> 加算到字典長度裡。
+input_vocab_size = subword_encoder_en.vocab_size + 2
+target_vocab_size = subword_encoder_zh.vocab_size + 2
+
+# Training data:
+train_dataset = (train_examples
+                 .map(tf_encode)  # bos, eos
+                 .filter(filter_max_len)  # 過濾長度
+                 .cache()
+                 .shuffle(BUFFER_SIZE)  # 重新打亂洗牌
+                 .padded_batch(BATCH_SIZE, padded_shapes=([-1], [-1]))  # 綁批次包
+                 .prefetch(tf.data.experimental.AUTOTUNE))
+```
+
+這邊有些已經定義過的 func 就不再重複放上來了，比如 `tf_encode()` 或 `filter_max_len()`。
+
+<br>
+<br>
+
+### 3. 定義損失函數與指數
+
+```py
+loss_object = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
+train_loss = tf.keras.metrics.Mean(name='train_loss') # 看 log 需要
+train_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='train_accuracy') # 看 log 需要
+
+def loss_function(real, pred):
+    # 將續列中不等於 0 的位置視作 1，其餘為 0
+    mask = tf.math.logical_not(tf.math.equal(real, 0))
+    loss_ = loss_object(real, pred)
+    mask = tf.cast(mask, dtype=loss_.dtype)
+    loss_ *= mask
+    return tf.reduce_mean(loss_)
+```
+
+<br>
+<br>
+
+### 4. Optimizer 與 Transformer
+
+```py
+# 將客製化 learning rate schdeule 丟入 Adam opt.
+# Adam opt. 的參數都跟論文相同
+learning_rate = CustomSchedule(d_model)
+optimizer = tf.keras.optimizers.Adam(learning_rate, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+
+# 實際訓練以及及時存檔
+transformer = Transformer(num_layers, d_model, num_heads, dff, input_vocab_size, target_vocab_size, dropout_rate)
+
+print(f"""這個 Transformer 有 {num_layers} 層 Encoder / Decoder layers
+d_model: {d_model}
+num_heads: {num_heads}
+dff: {dff}
+input_vocab_size: {input_vocab_size}
+target_vocab_size: {target_vocab_size}
+dropout_rate: {dropout_rate}
+""")
+```
+
+<br>
+<br>
+
+### 5. transformer 與 optimizer 的儲存工作
+
+```py
+train_perc = 100  # 用 100% 資料訓練
+
+# 方便比較不同實驗/ 不同超參數設定的結果
+run_id = f"{num_layers}layers_{d_model}d_{num_heads}heads_{dff}dff_{train_perc}train_perc"
+checkpoint_path = os.path.join(checkpoint_path, run_id)
+log_dir = os.path.join(log_dir, run_id)
+
+# tf.train.Checkpoint 可以幫我們把想要存下來的東西整合起來，方便儲存與讀取
+# 一般來說會存 transformer 以及 optimizer 的狀態
+ckpt = tf.train.Checkpoint(transformer=transformer, optimizer=optimizer)
+
+# ckpt_manager 會去 checkpoint_path 看有沒有符合 ckpt 裡頭定義的東西
+# 存檔的時候只保留最近 5 次 checkpoints，其他自動刪除
+ckpt_manager = tf.train.CheckpointManager(ckpt, checkpoint_path, max_to_keep=5)
+
+
+# 如果在 checkpoint 路徑上有發現檔案就讀進來
+if ckpt_manager.latest_checkpoint:
+    ckpt.restore(ckpt_manager.latest_checkpoint)
+
+    # 用來確認之前訓練多少 epochs 了
+    last_epoch = int(ckpt_manager.latest_checkpoint.split("-")[-1])
+    print(f'已讀取最新的 checkpoint，模型已訓練 {last_epoch} epochs。')
+else:
+    last_epoch = 0
+    print("沒找到 checkpoint，從頭訓練。")
+```
+
+<br>
+<br>
+
+### 6. 遮罩準備
+
+```py
+# 遮罩準備
+def create_masks(inp, tar):
+    enc_padding_mask = create_padding_mask(inp)
+    dec_padding_mask = create_padding_mask(inp)
+    look_ahead_mask = create_look_ahead_mask(tf.shape(tar)[1])
+    dec_target_padding_mask = create_padding_mask(tar)
+    combined_mask = tf.maximum(dec_target_padding_mask, look_ahead_mask)
+    return enc_padding_mask, combined_mask, dec_padding_mask
+```
+
+<br>
+<br>
+
+### 7. Train Step
+
+```py
+train_step_signature = [
+    tf.TensorSpec(shape=(None, None), dtype=tf.int64),
+    tf.TensorSpec(shape=(None, None), dtype=tf.int64),
+]
+@tf.function(input_signature=train_step_signature) # 優化 eager code 加速運算，input_signature 不加會錯。
+def train_step(inp, tar):
+    tar_inp = tar[:, :-1]
+    tar_real = tar[:, 1:]
+
+    # 建立遮罩
+    enc_padding_mask, combined_mask, dec_padding_mask = create_masks(inp, tar_inp)
+
+    with tf.GradientTape() as tape:  # GradientTape 紀錄數據轉換計算 loss
+        predictions, _ = transformer(inp, tar_inp, True, enc_padding_mask, combined_mask, dec_padding_mask)
+        loss = loss_function(tar_real, predictions)
+
+        gradients = tape.gradient(loss, transformer.trainable_variables)
+        optimizer.apply_gradients(zip(gradients, transformer.trainable_variables))  # 將梯度取出並用 optimizer 隊訓練權重做升降
+
+        train_loss(loss)
+        train_accuracy(tar_real, predictions)
+```
+
+<br>
+<br>
+
+### 8. 開始 Epochs
+
+```py
+print(f"此超參數組合的 Transformer 已經訓練 {last_epoch} epochs。")
+print(f"剩餘 epochs：{min(0, last_epoch - EPOCHS)}")
+# 用來寫資訊到 TensorBoard，非必要。
+summary_writer = tf.summary.create_file_writer(log_dir)
+
+
+# 比對設定的 `EPOCHS` 以及已訓練的 `last_epoch` 來決定還要訓練多少 epochs
+for epoch in range(last_epoch, EPOCHS):
+    start = time.time()
+
+    # 重置紀錄 TensorBoard 的 metrics
+    train_loss.reset_states()
+    train_accuracy.reset_states()
+
+    # 一個 epoch 就是把我們定義的訓練資料集一個一個 batch 拿出來處理，直到看完整個數據集
+    for (step_idx, (inp, tar)) in enumerate(train_dataset):
+        # 每次 step 就是將數據丟入 Transformer，讓它生預測結果並計算梯度最小化 loss
+        train_step(inp, tar)
+
+        # 每個 epoch 完成就存一次檔
+    if (epoch + 1) % 1 == 0:
+        ckpt_save_path = ckpt_manager.save()
+        print('Saving checkpoint for epoch {} at {}'.format(epoch + 1, ckpt_save_path))
+
+    # 將 loss 以及 accuracy 寫到 TensorBoard 上
+    with summary_writer.as_default():
+        tf.summary.scalar("train_loss", train_loss.result(), step=epoch + 1)
+        tf.summary.scalar("train_acc", train_accuracy.result(), step=epoch + 1)
+
+    print('Epoch {} Loss {:.4f} Accuracy {:.4f}'.format(epoch + 1, train_loss.result(), train_accuracy.result()))
+    print('Time taken for 1 epoch: {} secs\n'.format(time.time() - start))
+
+print("訓練已完成，可以進行測試。")
+```
+
+<br>
+<br>
+
+---
+
+經過上面的 epochs 訓練過後，Model 就成形了，接下來就可以來側看看 Model 了。
+
+---
+
+<br>
+<br>
+
+### 9. 實際測試
+
+```py
+# 實際翻譯函數
+def evaluate(inp_sentence):
+    # 準備英文句子前後會加上的 <BOS>, <EOS>
+    start_token = [subword_encoder_en.vocab_size]
+    end_token = [subword_encoder_en.vocab_size + 1]
+
+    # inp_sentence 是字串，我們用 Subword Tokenizer 將其變成子詞的索引序列
+    # 並在前後加上 BOS / EOS
+    inp_sentence = start_token + subword_encoder_en.encode(inp_sentence) + end_token
+    encoder_input = tf.expand_dims(inp_sentence, 0)  # 添加 batch_size 維度
+
+    # Decoder 在第一個時間點吃進去的輸入，是一個只包含一個中文 <BOS> token 的序列
+    decoder_input = [subword_encoder_zh.vocab_size]
+    output = tf.expand_dims(decoder_input, 0)  # 增加 batch 維度
+
+    # auto-regressive，一次生成一個中文字並將預測加到輸入再度餵進 Transformer
+    for i in range(TOKEN_MAX_LEN):
+        # 每多一個生成的字就得產生新的遮罩
+        enc_padding_mask, combined_mask, dec_padding_mask = create_masks(encoder_input, output)
+
+        # predictions.shape == (batch_size, seq_len, vocab_size)
+        predictions, attention_weights = transformer(encoder_input,
+                                                     output,
+                                                     False,
+                                                     enc_padding_mask,
+                                                     combined_mask,
+                                                     dec_padding_mask)
+
+        # 將序列中最後一個 distribution 取出，並將裡頭值最大的當作模型最新的預測字
+        predictions = predictions[:, -1:, :]  # (batch_size, 1, vocab_size)
+        # predicted_id 是下一個字的預測，注意，是一個字。
+        predicted_id = tf.cast(tf.argmax(predictions, axis=-1), tf.int32)
+
+        # 遇到 <end> token 就停止回傳，代表模型已經產生完結果
+        if tf.equal(predicted_id, subword_encoder_zh.vocab_size + 1):
+            break
+
+        # 將 Transformer 新預測的中文索引加到輸出序列中，讓 Decoder 可以在產生
+        # 下個中文字的時候關注到最新的 `predicted_id`
+        output = tf.concat([output, predicted_id], axis=-1)
+
+    # 將 batch 的維度去掉後回傳預測的中文索引序列
+    return tf.squeeze(output, axis=0)
+
+
+
+
+while True:
+    try:
+        inp_text = input("請輸入英文 (句尾加 '.' 最好)")
+        predicted_seq = evaluate(inp_text)
+        # 過濾掉 <start> & <end> tokens 並用中文的 subword tokenizer 幫索引序列還原回中文句子
+        target_vocab_size = subword_encoder_zh.vocab_size
+        predicted_seq_without_bos_eos = [idx for idx in predicted_seq if idx < target_vocab_size]
+        predicted_text = subword_encoder_zh.decode(predicted_seq_without_bos_eos)
+        print("您的輸入:", inp_text)
+        print("-" * 20)
+        print("預測數據 seq:", predicted_seq)
+        print("-" * 20)
+        print("翻譯結果:", predicted_text)
+    except Exception as ex:
+        print("翻譯時發生錯誤，請重試。")
+        print("錯誤: ", ex)
+
+```
+
+<br>
+<br>
+<br>
+
+---
+
+<br>
+
+# 結束 ! 大功告成
