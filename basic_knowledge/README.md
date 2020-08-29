@@ -15,3 +15,5 @@
 * [從 BN 到 LN](BN2LN/README.md)
 
 * [關於 Dropout](Dropout/README.md)
+
+* [合適的 loss func 與 輸出端 activation](work_process\suitable_activation&loss_func.md)
